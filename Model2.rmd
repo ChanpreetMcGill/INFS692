@@ -1,0 +1,104 @@
+---
+title: "INFS 692 Data Science Final Project: Model 2"
+author: "Chanpreet Kaur"
+date: '2022-12-16'
+output: pdf_document
+---
+## Model 2
+Please note: This model file gave system (Windows) issues that could not be resolved in time as it had compatibility issues with Python and tensorflow library. Below code was run on a different machine (MAC) but knit to pdf still did not work.
+
+All code in this file is referenced from week 8 lecture class and week8 assignment5. 
+
+First, we import all required R libraries.
+```{r}
+# Helper packages
+library(dplyr)         # for basic data wrangling
+# Modeling packages
+library(keras)         # for fitting DNNs
+library(tfruns)        # for additional grid search & model training functions
+library(caret)
+
+# Modeling helper package - not necessary for reproducibility
+library(tfestimators)  # provides grid search & model training interface
+```
+
+
+## Objective: To create a neural network-based classification model.Below splitting data into training and test
+```{r}
+# load and read csv file
+data <- read.csv('./radiomics_completedata.csv') 
+
+TrainTestSplit <- createDataPartition(data$Failure.binary,p=0.8,list=F)
+
+Train_Features <- data.matrix(data[TrainTestSplit,-2]) # feature values
+Train_Labels <- data[TrainTestSplit,2] #y value
+Test_Features <- data.matrix(data[-TrainTestSplit,-2])
+Test_Labels <- data[-TrainTestSplit,2] #y value
+
+#reshaping dataset; converting labels into categorical
+# getting error here as windows issue with TensorFlow. Have debugged here but installation has compatibility issues.
+# also tried another method but still rendered issue Error in py_module_import(module, convert = convert) : 
+# ModuleNotFoundError: No module named 'numpy'
+to_categorical(as.numeric(Train_Labels))[,c(-1)] -> Train_Labels
+to_categorical(as.numeric(Test_Labels))[,c(-1)] -> Test_Labels
+
+
+#converting the features into matrix
+as.matrix(apply(Train_Features, 2, function(x) (x-min(x))/(max(x) - min(x)))) -> Train_Features
+as.matrix(apply(Test_Features, 2, function(x) (x-min(x))/(max(x) - min(x)))) -> Test_Features
+```
+
+## Create five hidden layers with 256, 128, 128, 64 and 64 neurons respectively with activation functions of Sigmoid and  1 output layer with 2 neurons and activation function Softmax 
+Reference code from slide 24 week 8 and assignment
+```{r}
+model <- keras_model_sequential()
+
+#model training
+model <- keras_model_sequential() %>%
+  layer_dense(units = 256, activation = "sigmoid", input_shape = ncol(Train_Features)) %>%
+  layer_dropout(rate = 0.2) %>% 
+  layer_dense(units = 128, activation = "sigmoid") %>%
+  layer_dropout(rate = 0.2) %>% 
+  layer_dense(units = 128, activation = "sigmoid") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 64, activation = 'sigmoid') %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 64, activation = 'sigmoid') %>%
+  layer_dropout(rate  =0.2) %>%
+  layer_dense(units = 2,  activation = 'softmax') %>%
+  
+  #Backpropagation
+  compile(
+    loss = "categorical_crossentropy",
+    optimizer = optimizer_rmsprop(),
+    metrics = c("accuracy")
+    )
+
+summary(model)
+```
+
+## Model compilation usingn code Copy from slide 33 model compiler approach.
+```{r}
+model %>% compile(
+  loss = "sparse_categorical_crossentropy",
+  optimizer = optimizer_adam(),
+  metrics = c("accuracy")
+)
+```
+
+## Training model with epoch = 10, batch size = 128 and validation split = 0.15 
+Reference code from slide 33 week 8 and assignment
+```{r}
+history <- model %>% 
+  fit(Train_Features, Train_Labels, epochs = 10, batch_size = 128, validation_split = 0.5)
+```
+
+## Model performance evaluation on the test dataset.
+```{r}
+model %>% evaluate(Test_Features,Test_Labels)
+```
+
+## Model prediction on test dataset.
+```{r}
+model %>% predict(Test_Features)
+```

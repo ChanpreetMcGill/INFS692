@@ -1,0 +1,170 @@
+---
+title: "INFS 692 Data Science Final Project: Model 1"
+author: "Chanpreet Kaur"
+date: '2022-12-16'
+output: pdf_document
+---
+
+
+## Model 1
+
+All code in this file is referenced from week 7 lecture class. 
+
+### Task is to create an **ensemble classification model** with at least 3 models.
+
+Stacked generalization or Stacking is an ensemble method where multiple base learners are trained first, and then a combiner (Super learner) is trained to make final prediction. Overall, there would be 3 steps; set up the ensemble; train the ensemble; and finally predict on new data.
+In my project, I shall use the Stacking as my ENSEMBLE CLASSIFICATION MODEL aka Model 1. 
+
+First, we import all required R libraries.
+
+```{r, echo=TRUE}
+# Helper packages
+library(rsample)   # for creating our train-test splits
+library(recipes)   # for minor feature engineering tasks
+library(ggplot2)  # for graphics
+
+# Modeling packages
+library(h2o)       # for fitting stacked models
+library(rpart)    # direct engine for decision tree application
+library(caret) # for classification and regression training
+
+# Model Interpretability packages
+library(vip)         # for feature importance
+library(pdp)         # for feature effects/partial dependence plots
+
+# Other packages
+library(dslabs)     
+library(purrr)
+library(pROC)
+#library(rpart.plot)  # for plotting decision trees
+
+```
+
+### Pre-process given data
+
+Checking for missing values and null in data
+```{r, echo=TRUE}
+# Import data from csv file
+RadData <- read.csv('./radiomics_completedata.csv')
+which(is.na(RadData)) #no null or missing values in data
+```
+
+2. Normalizing the data and forming a numeric data matrix
+```{r, results='hide'}
+institution <- RadData$Institution
+Failure_binary <- RadData$Failure.binary
+#Focus on numeric data;Forming a complete numeric matrix
+num <- sapply(RadData, is.numeric) 
+RadData <- RadData[num]
+Failure_binary <- RadData$Failure.binary
+RadData <- Filter(function(x) !all(x %in% c(0, 1)), RadData) 
+f_Raddata <- scale(RadData)
+f_Raddata <- as.data.frame(f_Raddata)
+
+```
+
+3. Fetch Correlation of variables in data
+```{r, results='hide'}
+cor(f_Raddata)
+```
+
+
+### Cross-validation by Splitting data into training (80%) and testing (20%)
+
+```{r, echo=TRUE}
+set.seed(123) # for reproducibility
+
+f_Raddata2 <- cbind(f_Raddata, Failure_binary) #combining categorical with numeric data now
+f_Raddata3 <- cbind(f_Raddata2, institution)
+splitData <- initial_split(f_Raddata3, prop = 0.8, strata = 'Failure') #splitting using continous value attribute
+data_train <- training(splitData)
+data_test <- testing(splitData)
+```
+
+### Create different training models(GLM, RF and GBM) and then stack them to form an ensemble.
+ 
+Reference code from slide 68 in week7 
+
+```{r, echo=TRUE}
+# consistent categorical levels
+blueprint <- recipe(Failure_binary ~ ., data = data_train) %>%
+  step_other(all_nominal(), threshold = 0.005)
+
+# h2O objects; Create training & test sets for h2o
+h2o.init()
+train_h2o <- prep(blueprint, training = data_train, retain = TRUE) %>%
+  juice() %>%
+  as.h2o()  
+test_h2o <- prep(blueprint, training = data_train) %>%
+  bake(new_data = data_test) %>%
+  as.h2o()
+
+# Get response and feature names
+Y <- "Failure_binary"
+X <- setdiff(names(data_train), Y)
+
+# 1st model:Train & cross-validate a GLM model
+best_glm <- h2o.glm(
+  x = X, y = Y, training_frame = train_h2o, alpha = 0.1,
+  remove_collinear_columns = TRUE, nfolds = 10, fold_assignment = "Modulo",
+  keep_cross_validation_predictions = TRUE, seed = 123
+)
+
+# 2nd model:Train & cross-validate a RF model #omitted stopping metric as it is classification
+best_rf <- h2o.randomForest(
+  x = X, y = Y, training_frame = train_h2o, ntrees = 500, mtries = 20,
+  max_depth = 30, min_rows = 1, sample_rate = 0.8, nfolds = 10,
+  fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE,
+  seed = 123, stopping_rounds = 50
+)
+
+# 3rd model:Train & cross-validate a GBM model #omitted stopping metric as it is classification
+best_gbm <- h2o.gbm(
+  x = X, y = Y, training_frame = train_h2o, ntrees = 500, learn_rate = 0.01,
+  max_depth = 7, min_rows = 5, sample_rate = 0.8, nfolds = 10,
+  fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE,
+  seed = 123, stopping_rounds = 50
+)
+
+# Train a stacked ensemble using all 3 models above
+# reference code slide 72 week 7
+ensemble <- h2o.stackedEnsemble(x = X, y = Y, training_frame = train_h2o, base_models = list(best_glm, best_rf, best_gbm))
+```
+
+### Evaluate performance during Training; AUC values during Training
+```{r, echo=TRUE}
+df_train <- as.data.frame(train_h2o)
+#predict probability
+train_prob <- predict(ensemble, train_h2o, type = "prob")
+df_trainprob <- as.data.frame(train_prob)
+
+# ROC plot
+
+roc(df_train$Failure_binary~ df_trainprob[,1], plot=TRUE, legacy.axes=FALSE, 
+    percent=TRUE, col="black", lwd=2, print.auc=TRUE)
+```
+
+### Feature Importance/ interpretation in training GLM, RF and GBM models; Printing the Top 20 most imp features
+
+```{r, echo=TRUE}
+#feature importance of models
+#reference code slide 28 week 7
+p1<- vip::vip(best_gbm, num_features = 20, bar = FALSE)
+p2<- vip::vip(best_glm, num_features = 20, bar = FALSE)
+p3<- vip::vip(best_rf, num_features = 20, bar = FALSE)
+gridExtra::grid.arrange(p1,p2,p3,nrow=1)
+```
+
+### Evaluate performance during testing; printing the AUC values in test phase
+
+```{r, echo=TRUE}
+# predict probabilities
+df_test <- as.data.frame(test_h2o)
+test_prob <- predict(ensemble, test_h2o, type = "prob")
+df_testprob <- as.data.frame(test_prob)
+
+# ROC plot
+
+roc(df_test$Failure_binary~ df_testprob[,1], plot=TRUE, legacy.axes=FALSE, 
+    percent=TRUE, col="black", lwd=2, print.auc=TRUE)
+```
